@@ -1,0 +1,212 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JobHunt — Entry-level BA/DA + LaTeX</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="row" style="justify-content:space-between">
+  <strong>JobHunt — Entry-level BA/DA</strong>
+  <div class="row">
+    <a href="api-test.html"><button class="secondary">API Test</button></a>
+    <button id="installBtn" class="secondary">Install</button>
+  </div>
+</header>
+
+<section class="card">
+  <h3>Search (last 24h)</h3>
+  <div class="pills" id="rolePills"></div>
+  <div class="row" style="margin-top:.5rem">
+    <input id="loc" value="Ontario, Canada" placeholder="Location">
+    <button id="fetchBtn">Fetch Jobs</button>
+  </div>
+  <div id="status" class="small mono"></div>
+</section>
+
+<div class="grid">
+  <section class="card">
+    <h4>Results</h4>
+    <div id="jobs" class="scroll"></div>
+  </section>
+
+  <aside class="card">
+    <h4>Customize for Selected Job</h4>
+    <div id="jobMeta" class="small mono"></div>
+    <textarea id="jd" rows="7" placeholder="Click a job to auto-fill JD"></textarea>
+    <input id="keywords" placeholder="Missing keywords (comma-separated)">
+    <div class="row">
+      <button id="genBlocks" class="secondary">Generate LaTeX Blocks</button>
+      <button id="clearBlocks" class="secondary">Clear</button>
+    </div>
+    <hr>
+    <h5>Header</h5>
+    <textarea id="blockHeader" rows="4"></textarea><button class="copybtn" data-copy="#blockHeader">Copy Header</button>
+    <h5>Skills</h5>
+    <textarea id="blockSkills" rows="8"></textarea><button class="copybtn" data-copy="#blockSkills">Copy Skills</button>
+    <h5>Experience (S&P Global + SG Analytics)</h5>
+    <textarea id="blockExp" rows="18"></textarea><button class="copybtn" data-copy="#blockExp">Copy Experience</button>
+  </aside>
+</div>
+
+<footer class="small mono">Tip: Add <code>?v=2</code> to the URL after redeploy to bypass cache.</footer>
+
+<script>
+const ROLES=[
+  {id:'ba', label:'Business Analyst', q:'Business Analyst'},
+  {id:'da', label:'Data Analyst', q:'Data Analyst'},
+  {id:'fa', label:'Financial Analyst', q:'Financial Analyst'},
+  {id:'itpc', label:'IT Project Coordinator', q:'IT Project Coordinator'},
+  {id:'pco', label:'Project Control Officer', q:'Project Control Officer'}
+];
+let activeRoles=new Set(['ba','da']); // entry-level focus
+function renderPills(){
+  const box=document.getElementById('rolePills');
+  box.innerHTML = ROLES.map(r=>`<span class="pill ${activeRoles.has(r.id)?'active':''}" data-id="${r.id}">${r.label}</span>`).join('');
+}
+document.addEventListener('click',(e)=>{
+  const pill=e.target.closest('.pill'); if(!pill) return;
+  const id=pill.getAttribute('data-id');
+  if(activeRoles.has(id)) activeRoles.delete(id); else activeRoles.add(id);
+  if(activeRoles.size===0) activeRoles.add('ba');
+  renderPills();
+});
+
+let lastJobs=[];
+function setStatus(t){ document.getElementById('status').textContent=t||''; }
+function h(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function fetchJobs(){
+  const loc=document.getElementById('loc').value.trim()||'Ontario, Canada';
+  setStatus('Fetching…');
+  let all=[];
+  for(const role of ROLES){
+    if(!activeRoles.has(role.id)) continue;
+    const url=new URL('/api/search', location.origin);
+    url.searchParams.set('query', `${role.q} in ${loc}`);
+    url.searchParams.set('role', role.id); // tells function to apply entry-level filter for BA/DA
+    url.searchParams.set('date_posted','today'); url.searchParams.set('page','1'); url.searchParams.set('num_pages','1');
+    try{
+      const res=await fetch(url.toString(),{headers:{'accept':'application/json'}});
+      const txt=await res.text();
+      if(!res.ok){ console.warn('API error', role.id, res.status, txt); continue; }
+      const data=JSON.parse(txt);
+      const items=(data.data||[]).map(x=>({...x,_role:role.id}));
+      all.push(...items);
+    }catch(e){ console.warn('network', e); }
+  }
+  all.sort((a,b)=>(b.job_posted_at_timestamp||0)-(a.job_posted_at_timestamp||0));
+  lastJobs=all; renderJobs(all); setStatus('Loaded '+all.length+' jobs.');
+}
+
+function renderJobs(list){
+  const box=document.getElementById('jobs');
+  if(!list.length){ box.innerHTML='<div class="small">No results yet.</div>'; return; }
+  box.innerHTML = list.map(j=>{
+    const meta={id:j.job_id||j.job_title+'@'+j.employer_name,title:j.job_title,company:j.employer_name,url:j.job_apply_link||'',role:j._role||'',jd:[j.job_title,j.employer_name,j.job_description||''].join('\n\n')};
+    return `<div class="listitem" data-meta='${JSON.stringify(meta).replace(/'/g,'&apos;')}'>
+      <div class="row" style="justify-content:space-between">
+        <div><strong>${h(j.job_title)}</strong><span class="badge">${h(j.employer_name)}</span></div>
+        <div class="small">${h(j.job_city?j.job_city+', '+j.job_country:j.job_country||'')}</div>
+      </div>
+      ${j.job_apply_link?`<a href="${h(j.job_apply_link)}" target="_blank">Apply / Source</a>`:''}
+      <div><button class="secondary" onclick="selectJob(this.closest('.listitem'))">Select</button></div>
+    </div>`;
+  }).join('');
+}
+
+function selectJob(el){
+  const meta=JSON.parse(el.getAttribute('data-meta').replace(/&apos;/g,"'"));
+  document.getElementById('jd').value=meta.jd||'';
+  document.getElementById('jobMeta').textContent=`${meta.title} — ${meta.company}`;
+}
+
+// LaTeX blocks
+function genBlocks(){
+  const kw=(document.getElementById('keywords').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const t=kw.slice(0,3);
+  const header=[
+"% JD-BASED RESUME HEADER",
+"\vspace{-0.6em}",
+"\noindent",
+"\textbf{\Large FINANCIAL ANALYST -- \textit{"+(t[0] || '<Skill #1>')+"}, \textit{"+(t[1] || '<Skill #2>')+"}, \textit{"+(t[2] || '<Skill #3>')+"}}",
+"\vspace{-0.4em}"
+  ].join("\n");
+  const skills=[
+"\section*{SKILLS}",
+"\vspace{-.3em}",
+"\begin{itemize}[noitemsep]",
+"  \item \textbf{Financial \& Data:} P\&L analysis, variance analysis, cash flow modeling, KPI tracking",
+"  \item \textbf{Tools \& Technology:} Excel (adv), Power BI, SQL (joins), Python (pandas basics)",
+"  \item \textbf{Reporting \& Compliance:} month-end close, management reporting, GAAP/IFRS awareness",
+"  \item \textbf{Budgeting \& Forecasting:} rolling forecasts, driver-based budgeting, scenario analysis",
+"  \item \textbf{Additional Exposure:} stakeholder communication, cross-functional collaboration",
+"\end{itemize}"
+  ].join("\n");
+  const exp=[
+"\section*{WORK EXPERIENCE}",
+"",
+"\noindent",
+"\begin{minipage}[t]{0.6\textwidth}",
+"\textbf{Financial Specialist} \\",
+"\textit{S\&P Global}",
+"\end{minipage}%",
+"\hfill%",
+"\begin{minipage}[t]{0.4\textwidth}",
+"\raggedleft",
+"\textbf{March 2022 -- December 2022} \\",
+"\textit{India}",
+"\end{minipage}",
+"",
+"\begin{itemize}[noitemsep]",
+"  \item ... % keep",
+"  \item ... % keep",
+"  \item \textbf{JD-aligned duty:} Produced monthly reporting packs with variance bridges; improved exec decision speed by ~15\%.",
+"  \item \textbf{JD-aligned duty:} Built rolling forecasts tied to revenue/cost drivers; reduced forecast error by X\%.",
+"\end{itemize}",
+"",
+"\noindent",
+"\begin{minipage}[t]{0.6\textwidth}",
+"\textbf{Financial Analyst} \\",
+"\textit{SG Analytics Pvt. Ltd. (Morgan Stanley Capital International)}",
+"\end{minipage}%",
+"\hfill%",
+"\begin{minipage}[t]{0.4\textwidth}",
+"\raggedleft",
+"\textbf{January 2018 -- February 2022} \\",
+"\textit{India}",
+"\end{minipage}",
+"",
+"\begin{itemize}[noitemsep]",
+"  \item ... % keep",
+"  \item ... % keep",
+"  \item \textbf{JD-aligned duty:} Consolidated multi-entity data into standardized P\&L/KPI views; surfaced drivers/risks for recommendations.",
+"  \item \textbf{JD-aligned duty:} Designed month-end close workflows (recs, variance commentary) cutting cycle time by X days.",
+"\end{itemize}"
+  ].join("\n");
+
+  document.getElementById('blockHeader').value=header;
+  document.getElementById('blockSkills').value=skills;
+  document.getElementById('blockExp').value=exp;
+}
+
+function copySel(sel){ const el=document.querySelector(sel); el.select(); document.execCommand('copy'); }
+document.addEventListener('click',(e)=>{ if(e.target.classList.contains('copybtn')){ copySel(e.target.dataset.copy); e.target.textContent='Copied!'; setTimeout(()=>e.target.textContent='Copy',800); } });
+
+document.getElementById('fetchBtn').addEventListener('click', fetchJobs);
+document.getElementById('genBlocks').addEventListener('click', genBlocks);
+document.getElementById('clearBlocks').addEventListener('click', ()=>{ ['jd','keywords','blockHeader','blockSkills','blockExp'].forEach(id=>document.getElementById(id).value=''); document.getElementById('jobMeta').textContent=''; });
+
+// Render role pills
+renderPills();
+
+// PWA install + SW
+let deferredPrompt=null;
+window.addEventListener('beforeinstallprompt',(e)=>{ e.preventDefault(); deferredPrompt=e; document.getElementById('installBtn').disabled=false; });
+document.getElementById('installBtn').addEventListener('click', async ()=>{ if(!deferredPrompt){ alert('Use Add to Home Screen from browser menu.'); return; } deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt=null; });
+if('serviceWorker' in navigator){ fetch('sw.js',{cache:'no-store'}).then(r=>{ if(r.ok) navigator.serviceWorker.register('sw.js'); }); }
+</script>
+</body>
+</html>
